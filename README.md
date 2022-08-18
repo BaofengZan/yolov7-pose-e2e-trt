@@ -16,13 +16,16 @@ yolov7-pose end2end TRT实现
 
 # 使用流程
 1. 运行export_onnx.py导出onnx
+
+    1.1 如果需要将预处理也嵌入到onnx中，运行 `onnx_add_preprocess\export_preprocess.py`脚本，最后会合并出merge.onnx
 2.  生成engine
 ```python
 trtexec --onnx=./yolov7-pose.onnx --saveEngine=./yolov7-pose_fp16.engine --fp16 --workspace=1000
 ```
-windows下使用请看 trt_py.py文件中的说明
 
 3. 运行trt_py.py进行推理。
+    
+    3.1 如果预处理在onnx中，运行 trt_py_onnxpre.py。
 
 # TODO
 1. nms插入到onnx中。
