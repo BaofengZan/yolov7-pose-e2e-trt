@@ -16,10 +16,11 @@ if torch.cuda.is_available():
     model.half().to(device) 
 
 
-image = cv2.imread(r'D:\LearningCodes\GithubRepo\yolov7\inference\images\bus.jpg')
+image = cv2.imread(r'D:\LearningCodes\GithubRepo\yolov7\inference\images\bus.jpg') # bgr
+image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 image = letterbox(image, 960, stride=64, auto=True)[0]
 image_ = image.copy()
-image = transforms.ToTensor()(image)
+image = transforms.ToTensor()(image) 
 image = torch.tensor(np.array([image.numpy()]))
 
 if torch.cuda.is_available():

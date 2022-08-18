@@ -116,18 +116,21 @@ class TRT_engine():
 
     def preprocess(self,image):
         self.img,self.r,self.dw,self.dh = self.letterbox(image)
-        self.img = self.img[...,::-1]  # BGR转RGB
-        self.img = self.img.transpose((2, 0, 1))
-        self.img = np.expand_dims(self.img,0)
-        self.img = np.ascontiguousarray(self.img)
-        self.img = torch.from_numpy(self.img).to(self.device)
-        self.img = self.img.float()
-        self.img /= 255.0
-        return self.img
+        # self.img = self.img[...,::-1]  # BGR转RGB
+        # self.img = self.img.transpose((2, 0, 1))
+        # self.img = np.expand_dims(self.img,0)
+        # self.img = np.ascontiguousarray(self.img)
+        # self.img = torch.from_numpy(self.img).to(self.device)
+        # self.img = self.img.float()
+        # self.img /= 255.0
+        show_img = self.img.copy()
+        self.img = self.img.astype('float32')  # 手动转为float
+        self.img = torch.from_numpy(self.img).to(self.device)  # 转为tensor
+        return self.img, show_img
 
     def predict(self,img,threshold):
-        img = self.preprocess(img)
-        self.binding_addrs['images'] = int(img.data_ptr())
+        img, show_img = self.preprocess(img)
+        self.binding_addrs['pre/images'] = int(img.data_ptr())
         self.context.execute_v2(list(self.binding_addrs.values()))
         # nums = self.bindings['num_detections'].data[0].tolist()
         # boxes = self.bindings['detection_boxes'].data[0].tolist()
@@ -152,7 +155,7 @@ class TRT_engine():
             # new_bboxes.append([classes[i],scores[i],xmin,ymin,xmax,ymax])
         print(f"after = {len(new_bboxes)}")
         output_box = non_max_suppression_kpt(new_bboxes, 0.65)
-        return output_box, img
+        return output_box, show_img
 
 def visualize(img,bbox_array):
     for temp in bbox_array:
@@ -179,7 +182,7 @@ def visualize(img,bbox_array):
 
     return img
 
-trt_engine = TRT_engine("./yolov7-w6-pose_fp32.engine")
+trt_engine = TRT_engine("./merge_fp32.engine")
 img = cv2.imread(r"D:\LearningCodes\GithubRepo\yolov7\inference\images\bus.jpg")
 # i = 0
 # while(i < 10):
@@ -197,11 +200,11 @@ while(i<1):
     i+=1
 
 print(f"Avg infer time = {(sumtime/100)*1000} ms")
-img = img.squeeze(0)
-nimg = img.permute(1, 2, 0) * 255
-nimg = nimg.cpu().numpy().astype(np.uint8)
-nimg = cv2.cvtColor(nimg, cv2.COLOR_RGB2BGR)
+# img = img.squeeze(0)
+# nimg = img.permute(1, 2, 0) * 255
+# nimg = nimg.cpu().numpy().astype(np.uint8)
+#nimg = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-nimg = visualize(nimg,results)
+nimg = visualize(img,results)
 cv2.imshow("img",nimg)
 cv2.waitKey(0)
