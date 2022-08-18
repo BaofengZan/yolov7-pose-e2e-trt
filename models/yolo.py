@@ -254,6 +254,10 @@ class IKeypoint(nn.Module):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
+        if torch.onnx.is_in_onnx_export():
+            self.inplace = False
+        else:
+            self.inplace = True
         for i in range(self.nl):
             if self.nkpt is None or self.nkpt==0:
                 x[i] = self.im[i](self.m[i](self.ia[i](x[i])))  # conv
@@ -261,57 +265,85 @@ class IKeypoint(nn.Module):
                 x[i] = torch.cat((self.im[i](self.m[i](self.ia[i](x[i]))), self.m_kpt[i](x[i])), axis=1)
 
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
-            x_det = x[i][..., :6]
-            x_kpt = x[i][..., 6:]
+            x[i] = x[i].view(int(bs), int(self.na), int(self.no), int(ny), int(nx)).permute(0, 1, 3, 4, 2).contiguous()
+            if not torch.onnx.is_in_onnx_export(): 
+                x_det = x[i][..., :6]
+                x_kpt = x[i][..., 6:]
+            else:
+                x_det, x_kpt = x[i].split((6, int(self.no)-6), -1)
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
-                kpt_grid_x = self.grid[i][..., 0:1]
-                kpt_grid_y = self.grid[i][..., 1:2]
-
+                if not torch.onnx.is_in_onnx_export(): 
+                    kpt_grid_x = self.grid[i][..., 0:1]
+                    kpt_grid_y = self.grid[i][..., 1:2]
+                else:
+                    grid = self.grid[i].cpu().detach().numpy()
+                    grid = torch.tensor(grid)
+                    kpt_grid_x, kpt_grid_y = grid.split((1,1), -1)
                 if self.nkpt == 0:
                     y = x[i].sigmoid()
                 else:
                     y = x_det.sigmoid()
 
                 if self.inplace:
+                    # 只要不是导出onnx，都走这里，以防下面的修改对训练或者demo的影响。
                     xy = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
                     wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i].view(1, self.na, 1, 1, 2) # wh
                     if self.nkpt != 0:
                         x_kpt[..., 0::3] = (x_kpt[..., ::3] * 2. - 0.5 + kpt_grid_x.repeat(1,1,1,1,17)) * self.stride[i]  # xy
                         x_kpt[..., 1::3] = (x_kpt[..., 1::3] * 2. - 0.5 + kpt_grid_y.repeat(1,1,1,1,17)) * self.stride[i]  # xy
-                        #x_kpt[..., 0::3] = (x_kpt[..., ::3] + kpt_grid_x.repeat(1,1,1,1,17)) * self.stride[i]  # xy
-                        #x_kpt[..., 1::3] = (x_kpt[..., 1::3] + kpt_grid_y.repeat(1,1,1,1,17)) * self.stride[i]  # xy
-                        #print('=============')
-                        #print(self.anchor_grid[i].shape)
-                        #print(self.anchor_grid[i][...,0].unsqueeze(4).shape)
-                        #print(x_kpt[..., 0::3].shape)
-                        #x_kpt[..., 0::3] = ((x_kpt[..., 0::3].tanh() * 2.) ** 3 * self.anchor_grid[i][...,0].unsqueeze(4).repeat(1,1,1,1,self.nkpt)) + kpt_grid_x.repeat(1,1,1,1,17) * self.stride[i]  # xy
-                        #x_kpt[..., 1::3] = ((x_kpt[..., 1::3].tanh() * 2.) ** 3 * self.anchor_grid[i][...,1].unsqueeze(4).repeat(1,1,1,1,self.nkpt)) + kpt_grid_y.repeat(1,1,1,1,17) * self.stride[i]  # xy
-                        #x_kpt[..., 0::3] = (((x_kpt[..., 0::3].sigmoid() * 4.) ** 2 - 8.) * self.anchor_grid[i][...,0].unsqueeze(4).repeat(1,1,1,1,self.nkpt)) + kpt_grid_x.repeat(1,1,1,1,17) * self.stride[i]  # xy
-                        #x_kpt[..., 1::3] = (((x_kpt[..., 1::3].sigmoid() * 4.) ** 2 - 8.) * self.anchor_grid[i][...,1].unsqueeze(4).repeat(1,1,1,1,self.nkpt)) + kpt_grid_y.repeat(1,1,1,1,17) * self.stride[i]  # xy
                         x_kpt[..., 2::3] = x_kpt[..., 2::3].sigmoid()
 
                     y = torch.cat((xy, wh, y[..., 4:], x_kpt), dim = -1)
-
                 else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
-                    xy = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
+                    anchor_grid = self.anchor_grid[i].clone().view(1, -1, 1, 1, 2)
+                     # 这里的y是[bs,3,20,20,85]
+                    # split在第四维度，分为 2， 2， selg.nc+1的tensor
+                    xy, wh, conf = y.split((2, 2, self.nc+1), 4)
+                    xy = (xy * 2. - 0.5 + grid) * self.stride[i].item()  # xy
+                    wh = (wh * 2) ** 2 * anchor_grid  # wh
                     if self.nkpt != 0:
-                        y[..., 6:] = (y[..., 6:] * 2. - 0.5 + self.grid[i].repeat((1,1,1,1,self.nkpt))) * self.stride[i]  # xy
-                    y = torch.cat((xy, wh, y[..., 4:]), -1)
-
-                z.append(y.view(bs, -1, self.no))
-
-        return x if self.training else (torch.cat(z, 1), x)
+                        kpt_split = x_kpt.split(tuple([1 for _ in range(self.nkpt*3)]), 4)
+                        x_kpt_split=[] 
+                        y_kpt_split=[]
+                        conf_kpt_split = []
+                        for j in range(self.nkpt*3):
+                            if (j%3==0):
+                                x_kpt_split.append(kpt_split[j])
+                            if (j%3==1):
+                                y_kpt_split.append(kpt_split[j])
+                            if (j%3==2):
+                                conf_kpt_split.append(kpt_split[j])
+                        # print("--------", (torch.cat(x_kpt_split, -1).size()))
+                        x_kpt_split = torch.cat(x_kpt_split, -1)
+                        y_kpt_split = torch.cat(y_kpt_split, -1)
+                        conf_kpt_split = torch.cat(conf_kpt_split, -1)
+                        x_kpt_x = (x_kpt_split * 2. - 0.5 + kpt_grid_x.repeat(1,1,1,1,17)) * self.stride[i].item()  # xy
+                        x_kpt_y = (y_kpt_split * 2. - 0.5 + kpt_grid_y.repeat(1,1,1,1,17)) * self.stride[i].item()  # xy
+                        x_kpt_c = conf_kpt_split.sigmoid()
+                    y = torch.cat((xy, wh, conf, x_kpt_x, x_kpt_y, x_kpt_c), -1)
+                _,c,h,w,_ = y.size()
+                z.append(y.view(-1, int(c)*int(h)*int(w), self.no))
+        if self.training:
+            return x
+        elif(torch.onnx.is_in_onnx_export()):
+            return (torch.cat(z, 1), )
+        else:
+            return (torch.cat(z, 1), x)
 
     @staticmethod
     def _make_grid(nx=20, ny=20):
         yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
         return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
-
+    # def _make_grid_numpy(self, nx=20, ny=20, i=0):
+    #     d = self.anchors[i].device
+    #     yv, xv = torch.meshgrid([torch.arange(ny).to(d), torch.arange(nx).to(d)])
+    #     grid = torch.stack((xv, yv), 2).expand((1, self.na, ny, nx, 2)).float()
+    #     anchor_grid = (self.anchors[i].clone() * self.stride[i]) \
+    #     .view((1, self.na, 1, 1, 2)).expand((1, self.na, ny, nx, 2)).float()
+    #     return grid, anchor_grid
 
 class Model(nn.Module):
     def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
@@ -556,3 +588,4 @@ if __name__ == '__main__':
     # logger.info("Run 'tensorboard --logdir=models' to view tensorboard at http://localhost:6006/")
     # tb_writer.add_graph(torch.jit.trace(model, img, strict=False), [])  # add model graph
     # tb_writer.add_image('test', img[0], dataformats='CWH')  # add model to tensorboard
+

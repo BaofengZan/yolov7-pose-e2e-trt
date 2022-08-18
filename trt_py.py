@@ -1,6 +1,6 @@
 #coding=utf-8
 """
-./model/export.onnx 导出带有nms的onnx后。
+导出onnx后。
 1 生成engine
     trtexec --onnx=./yolov7.onnx --saveEngine=./yolov7_fp16.engine --fp16 --workspace=200
     D:\TensorRT-8.4.1.5.Windows10.x86_64.cuda-10.2.cudnn8.4\TensorRT-8.4.1.5\lib\trtexec.exe --onnx=./yolov7.onnx --saveEngine=./yolov7_fp32.engine --workspace=1000
