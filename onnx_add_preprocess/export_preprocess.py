@@ -23,7 +23,7 @@ class Preprocess(torch.nn.Module):
         # 输入的为uint8的NHWC形式
     def forward(self, x):
         # x原本是uint8的先转为float
-        x = x[...,[2, 0, 1]]  # 产生了Gather节点。
+        x = x[...,[2, 1, 0]]  # 产生了Gather节点。  BGR->RGB
         x = x / 255.0
         x = x.permute(0, 3, 1, 2) # 
         return x
